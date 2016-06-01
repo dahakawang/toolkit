@@ -18,7 +18,7 @@
 using std::string;
 
 void handle(int) {
-    if (waitpid(-1, NULL, WNOHANG) < 0) report("error waitpid");
+    while (waitpid(-1, NULL, WNOHANG) > 0);
 }
 
 
@@ -32,6 +32,7 @@ void classical_fork(const Config& config) {
 
         pid_t pid = fork();
         if (pid > 0) {
+            close(client_fd);
             continue;
         } else if (pid == 0) {
             close(fd);
