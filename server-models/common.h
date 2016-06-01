@@ -10,6 +10,7 @@ public:
     string host;
     string file;
     string mode;
+    int pool_size;
 };
 
 void report(const char* msg);
