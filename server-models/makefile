@@ -7,10 +7,11 @@ all: prog
 
 
 prog: $(OBJECTS)
-	$(CXX) $(FLAGS) -o prog $(OBJECTS)
+	$(CXX) $(FLAGS) -lpthread -o prog $(OBJECTS)
 
 $(OBJECTS): %.o:%.cc
 	$(CXX) $(FLAGS) -c -o $@ $<
 
 clean:
 	rm *.o
+	rm prog

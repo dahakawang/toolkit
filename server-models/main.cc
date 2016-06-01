@@ -3,6 +3,7 @@
 
 void classical_single(const Config& config);
 void classical_fork(const Config& config);
+void classical_thread(const Config& config);
 
 using namespace std;
 
@@ -24,6 +25,8 @@ int main(int argc, char *argv[]) {
         classical_single(config);
      } else if (config.mode == "fork") {
         classical_fork(config);
+     } else if (config.mode == "thread") {
+        classical_thread(config);
     } else {
         std::cerr << "unknown mode " << config.mode << std::endl;
     }
