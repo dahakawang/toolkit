@@ -5,6 +5,7 @@ void classical_single(const Config& config);
 void classical_fork(const Config& config);
 void classical_thread(const Config& config);
 void classical_thread_pool(const Config& config);
+void classical_select(const Config& config);
 
 using namespace std;
 
@@ -41,7 +42,10 @@ int main(int argc, char *argv[]) {
      } else if (config.mode == "thread") {
         classical_thread(config);
      } else if (config.mode == "pool") {
-        classical_thread_pool(config);    } else {
+        classical_thread_pool(config);    
+     } else if (config.mode == "select") {
+        classical_select(config);    
+     } else {
         std::cerr << "unknown mode " << config.mode << std::endl;
     }
 
