@@ -226,12 +226,21 @@ DataVector load_double_list(FILE* file) {
     return ret;
 }
 
-
 DataVector load_file(const string& file) {
     file_guard f(fopen(file.c_str(), "rb"));
     if (!f) throw std::runtime_error("failed open file");
 
     return load_double_list(f.get());
+}
+
+void check(const DataVector& base, const DataVector& result) {
+    if (base.size() != result.size()) throw std::runtime_error("not match");
+
+    for (size_t i = 0; i < base.size(); ++i) {
+        if (base[i] != result[i]) {
+            throw std::runtime_error("not match [" + to_string(i) + "] = " + to_string(base[i]) + " - " + to_string(result[i]));
+        }
+    }
 }
 
 /* ####################################################################
@@ -253,7 +262,6 @@ inline void sqrt_sse_single(double* out, double* num) {
     _mm_store_sd(out, _mm_sqrt_sd(in, in));
 }
 
-
 void compare_sse_single(DataVector& num, DataVector& out) {
     for (size_t i = 0; i < out.size(); i++) {
         sqrt_sse_single(&out[i], &num[i]);
@@ -273,15 +281,6 @@ void compare_sse_double(DataVector& num, DataVector& out) {
     if (out.size() % 2 != 0) out.back() = sqrt(num.back());
 }
 
-void check(const DataVector& base, const DataVector& result) {
-    if (base.size() != result.size()) throw std::runtime_error("not match");
-
-    for (size_t i = 0; i < base.size(); ++i) {
-        if (base[i] != result[i]) {
-            throw std::runtime_error("not match [" + to_string(i) + "] = " + to_string(base[i]) + " - " + to_string(result[i]));
-        }
-    }
-}
 
 inline void sqrt_avx(double* out, double* num) {
     __m256d in = _mm256_load_pd(num);
