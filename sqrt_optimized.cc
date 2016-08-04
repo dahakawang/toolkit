@@ -211,6 +211,7 @@ class aligned_allocator
 };
 
 typedef vector<double, aligned_allocator<double, 32>> DataVector;
+typedef DataVector::iterator DataIterator;
 
 DataVector load_double_list(FILE* file) {
     size_t size = get_file_size(file);
@@ -287,13 +288,20 @@ inline void sqrt_avx(double* out, double* num) {
     _mm256_store_pd(out, _mm256_sqrt_pd(in));
 }
 
-void compare_avx(DataVector& num, DataVector& out) {
-    size_t i = 0;
-    for (i = 0; i < out.size(); i+=4) {
-        sqrt_avx(&out[i], &num[i]);
+void compare_avx_iter(DataIterator begin, DataIterator end, DataIterator out) {
+    for (; begin + 4 < end; begin += 4, out += 4) {
+        sqrt_avx(&*begin, &*out);
     }
 
-    //ignored remains
+    for (; begin < end; ++begin, ++out) *out = sqrt(*begin);
+}
+
+void compare_avx(DataVector& num, DataVector& out) {
+    compare_avx_iter(num.begin(), num.end(), out.begin());
+}
+
+void zero_out(DataVector& data) {
+    std::fill(data.begin(), data.end(), 0);
 }
 
 void check_align(void* p) {
@@ -321,20 +329,24 @@ int main(int argc, char *argv[]) {
     check_align(&data[0]);
     check_align(&result[0]);
 
+    zero_out(result);
     benchmark([&](){
         baseline(data, ans);
     }, "Baseline Test");
 
+    zero_out(result);
     benchmark([&](){
         compare_sse_single(data, result);
     }, "SSE2 Test");
     check(ans, result);
 
+    zero_out(result);
     benchmark([&](){
         compare_sse_double(data, result);
     }, "SSE2 Packed Test");
     check(ans, result);
 
+    zero_out(result);
     benchmark([&](){
         compare_avx(data, result);
     }, "AVX Test");
