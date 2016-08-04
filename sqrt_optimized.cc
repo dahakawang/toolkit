@@ -278,7 +278,7 @@ void check(const DataVector& base, const DataVector& result) {
 
     for (size_t i = 0; i < base.size(); ++i) {
         if (base[i] != result[i]) {
-            throw std::runtime_error("not match");
+            throw std::runtime_error("not match [" + to_string(i) + "] = " + to_string(base[i]) + " - " + to_string(result[i]));
         }
     }
 }
