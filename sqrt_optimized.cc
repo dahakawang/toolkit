@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cmath>
 #include <random>
+#include <thread>
 #include <emmintrin.h>
 #include <immintrin.h>
 
@@ -212,6 +213,7 @@ class aligned_allocator
 
 typedef vector<double, aligned_allocator<double, 32>> DataVector;
 typedef DataVector::iterator DataIterator;
+typedef tuple<DataIterator, DataIterator, DataIterator> TbbData;
 
 DataVector load_double_list(FILE* file) {
     size_t size = get_file_size(file);
@@ -320,6 +322,27 @@ void compare_avx(DataVector& num, DataVector& out) {
     compare_avx_iter(num.begin(), num.end(), out.begin());
 }
 
+class TbbBody {
+public:
+    void operator()(TbbData t) {
+        compare_avx_iter(get<0>(t), get<1>(t), get<2>(t));
+    }
+
+};
+
+void compare_tbb_avx(DataVector& num, DataVector& out) {
+    graph g;
+    function_node<TbbData> node(g, unlimited, TbbBody());
+    static const size_t SIZE = ((2 << 23) / 4) * 4;
+
+    for (size_t pos = 0; pos < num.size(); pos += SIZE) {
+        size_t pos_end = (pos + SIZE >= num.size())? num.size() : pos + SIZE;
+        node.try_put(make_tuple(num.begin() + pos, num.begin() + pos_end, out.begin() + pos));
+    }
+
+    g.wait_for_all();
+}
+
 
 int main(int argc, char *argv[]) {
     //generate_file("./list.txt");
@@ -352,5 +375,12 @@ int main(int argc, char *argv[]) {
         compare_avx(data, result);
     }, "AVX Test");
     check(ans, result);
+
+    zero_out(result);
+    benchmark([&](){
+        compare_tbb_avx(data, result);
+    }, "TBB AVX Test");
+    check(ans, result);
+
     return 0;
 }
