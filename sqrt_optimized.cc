@@ -289,7 +289,7 @@ inline void sqrt_avx(double* out, double* num) {
 
 void compare_avx_iter(DataIterator begin, DataIterator end, DataIterator out) {
     for (; begin + 4 < end; begin += 4, out += 4) {
-        sqrt_avx(&*begin, &*out);
+        sqrt_avx(&*out, &*begin);
     }
 
     for (; begin < end; ++begin, ++out) *out = sqrt(*begin);
