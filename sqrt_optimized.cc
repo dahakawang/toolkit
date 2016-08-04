@@ -91,13 +91,6 @@ vector<double> load_file(const string& file) {
 }
 
 
-#ifdef _WIN32
-#include <malloc.h>
-#endif
-#include <cstdint>
-#include <vector>
-#include <iostream>
-
 /**
  * Allocator for aligned data.
  *
