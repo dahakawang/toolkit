@@ -62,19 +62,6 @@ size_t get_file_size(FILE* file) {
     return size;
 }
 
-vector<double> load_double_list(FILE* file) {
-    size_t size = get_file_size(file);
-    if (size % sizeof(double) != 0) throw std::runtime_error("file size inconsistent");
-    size_t numDataPts = size / sizeof(double);
-
-    vector<double> ret(numDataPts);
-    if (fread(&ret[0], sizeof(double), numDataPts, file) != numDataPts) {
-        throw std::runtime_error("failed to read");
-    }
-
-    return ret;
-}
-
 void generate_file(const string& file) {
     file_guard f(fopen(file.c_str(), "wb"));
     if (!f) throw std::runtime_error("failed open file");
@@ -82,14 +69,6 @@ void generate_file(const string& file) {
     auto data = generate(1 << 27);
     save_double_list(f.get(), data);
 }
-
-vector<double> load_file(const string& file) {
-    file_guard f(fopen(file.c_str(), "rb"));
-    if (!f) throw std::runtime_error("failed open file");
-
-    return load_double_list(f.get());
-}
-
 
 /**
  * Allocator for aligned data.
@@ -231,7 +210,28 @@ class aligned_allocator
 		aligned_allocator& operator=(const aligned_allocator&);
 };
 
+typedef vector<double, aligned_allocator<double, 32>> DataVector;
 
+DataVector load_double_list(FILE* file) {
+    size_t size = get_file_size(file);
+    if (size % sizeof(double) != 0) throw std::runtime_error("file size inconsistent");
+    size_t numDataPts = size / sizeof(double);
+
+    DataVector ret(numDataPts);
+    if (fread(&ret[0], sizeof(double), numDataPts, file) != numDataPts) {
+        throw std::runtime_error("failed to read");
+    }
+
+    return ret;
+}
+
+
+DataVector load_file(const string& file) {
+    file_guard f(fopen(file.c_str(), "rb"));
+    if (!f) throw std::runtime_error("failed open file");
+
+    return load_double_list(f.get());
+}
 
 /* ####################################################################
  *
@@ -241,7 +241,7 @@ class aligned_allocator
  *
  * ####################################################################*/
 
-void baseline(vector<double>& num, vector<double>& out) {
+void baseline(DataVector& num, DataVector& out) {
     for (size_t i = 0; i < out.size(); i++) {
         out[i] = sqrt(num[i]);
     }
@@ -253,7 +253,7 @@ inline void sqrt_sse_single(double* out, double* num) {
 }
 
 
-void compare_sse_single(vector<double>& num, vector<double>& out) {
+void compare_sse_single(DataVector& num, DataVector& out) {
     for (size_t i = 0; i < out.size(); i++) {
         sqrt_sse_single(&out[i], &num[i]);
     }
@@ -264,7 +264,7 @@ inline void sqrt_sse_double(double* out, double* num) {
     _mm_store_pd(out, _mm_sqrt_pd(in));
 }
 
-void compare_sse_double(vector<double>& num, vector<double>& out) {
+void compare_sse_double(DataVector& num, DataVector& out) {
     for (size_t i = 0; i < out.size(); i+=2) {
         sqrt_sse_double(&out[i], &num[i]);
     }
@@ -272,7 +272,7 @@ void compare_sse_double(vector<double>& num, vector<double>& out) {
     if (out.size() % 2 != 0) out.back() = sqrt(num.back());
 }
 
-void check(const vector<double>& base, const vector<double>& result) {
+void check(const DataVector& base, const DataVector& result) {
     if (base.size() != result.size()) throw std::runtime_error("not match");
 
     for (size_t i = 0; i < base.size(); ++i) {
@@ -287,7 +287,7 @@ inline void sqrt_avx(double* out, double* num) {
     _mm256_store_pd(out, _mm256_sqrt_pd(in));
 }
 
-void compare_avx(vector<double>& num, vector<double>& out) {
+void compare_avx(DataVector& num, DataVector& out) {
     size_t i = 0;
     for (i = 0; i < out.size(); i+=4) {
         sqrt_avx(&out[i], &num[i]);
@@ -314,9 +314,9 @@ void check_align(void* p) {
 
 int main(int argc, char *argv[]) {
     //generate_file("./list.txt");
-    vector<double> data = load_file("./list.txt");
-    vector<double> ans(data.size());
-    vector<double> result(data.size());
+    DataVector data = load_file("./list.txt");
+    DataVector ans(data.size());
+    DataVector result(data.size());
 
     check_align(&data[0]);
     check_align(&result[0]);
