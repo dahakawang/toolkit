@@ -243,6 +243,27 @@ void check(const DataVector& base, const DataVector& result) {
     }
 }
 
+void zero_out(DataVector& data) {
+    std::fill(data.begin(), data.end(), 0);
+}
+
+void check_align(void* p) {
+    long long ptr  = (long long)p;
+    if (ptr % 32 == 0) {
+        std::cout << "aligned 32byte" << std::endl;
+        return;
+    }
+    if (ptr % 16 == 0) {
+        std::cout << "aligned 16byte" << std::endl;
+        return;
+    }
+    if (ptr % 8 == 0) {
+        std::cout << "aligned 8byte" << std::endl;
+        return;
+    }
+}
+
+
 /* ####################################################################
  *
  *
@@ -299,25 +320,6 @@ void compare_avx(DataVector& num, DataVector& out) {
     compare_avx_iter(num.begin(), num.end(), out.begin());
 }
 
-void zero_out(DataVector& data) {
-    std::fill(data.begin(), data.end(), 0);
-}
-
-void check_align(void* p) {
-    long long ptr  = (long long)p;
-    if (ptr % 32 == 0) {
-        std::cout << "aligned 32byte" << std::endl;
-        return;
-    }
-    if (ptr % 16 == 0) {
-        std::cout << "aligned 16byte" << std::endl;
-        return;
-    }
-    if (ptr % 8 == 0) {
-        std::cout << "aligned 8byte" << std::endl;
-        return;
-    }
-}
 
 int main(int argc, char *argv[]) {
     //generate_file("./list.txt");
