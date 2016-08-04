@@ -90,6 +90,16 @@ vector<double> load_file(const string& file) {
     return load_double_list(f.get());
 }
 
+
+
+/* ####################################################################
+ *
+ *
+ *   all kinds of sqrt implementations
+ *
+ *
+ * ####################################################################*/
+
 void baseline(vector<double>& num, vector<double>& out) {
     for (size_t i = 0; i < out.size(); i++) {
         out[i] = sqrt(num[i]);
