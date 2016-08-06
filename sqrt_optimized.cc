@@ -10,8 +10,11 @@
 #include <thread>
 #include <emmintrin.h>
 #include <immintrin.h>
+#include <cuda_runtime.h>
+#include <cuda.h>
 
 using namespace tbb::flow;
+using namespace tbb;
 using namespace std;
 
 template<typename T>
@@ -214,6 +217,7 @@ class aligned_allocator
 typedef vector<double, aligned_allocator<double, 32>> DataVector;
 typedef DataVector::iterator DataIterator;
 typedef tuple<DataIterator, DataIterator, DataIterator> TbbData;
+typedef DataIterator::value_type Real;
 
 DataVector load_double_list(FILE* file) {
     size_t size = get_file_size(file);
@@ -262,6 +266,16 @@ void check_align(void* p) {
     if (ptr % 8 == 0) {
         std::cout << "aligned 8byte" << std::endl;
         return;
+    }
+}
+
+void print_cuda() {
+    int count;
+    cudaGetDeviceCount(&count);
+    for (int i = 0; i < count; ++i) {
+        cudaDeviceProp prop;
+        cudaGetDeviceProperties(&prop, i);
+        printf("GPU [%d] %d.%d\n", i, prop.major, prop.minor);
     }
 }
 
@@ -333,7 +347,7 @@ public:
 void compare_tbb_avx(DataVector& num, DataVector& out) {
     graph g;
     function_node<TbbData> node(g, unlimited, TbbBody());
-    static const size_t SIZE = ((2 << 23) / 4) * 4;
+    static const size_t SIZE = ((2 << 24) / 4) * 4;
 
     for (size_t pos = 0; pos < num.size(); pos += SIZE) {
         size_t pos_end = (pos + SIZE >= num.size())? num.size() : pos + SIZE;
@@ -343,6 +357,50 @@ void compare_tbb_avx(DataVector& num, DataVector& out) {
     g.wait_for_all();
 }
 
+void compare_tbb_para_for_avx(DataVector& num, DataVector& out) {
+    parallel_for(blocked_range<size_t>(0, num.size(), 4 * 2<<20), [&](const blocked_range<size_t>& r) {
+        compare_avx_iter(num.begin() + r.begin(), num.begin() + r.end(), out.begin() + r.begin());
+    });
+}
+
+void check_error(cudaError_t error, const char* str = nullptr) {
+    if (error != cudaSuccess) {
+        std::cout << cudaGetErrorString(error) << " " << (str? str : "")<< std::endl;
+        throw std::runtime_error("GPU Error");
+    }
+}
+
+#define THREAD_PER_BLOCK 1024
+__global__ void bulk_sqrt_kernel(Real* data, size_t count) {
+    size_t pos = blockIdx.x * blockDim.x + threadIdx.x;
+    if (pos >= count) return;
+    data[pos] = sqrt(data[pos]);
+}
+
+void _compare_cuda(DataVector& num, DataVector& out, size_t pos, size_t count) {
+    cudaError_t ret = cudaSuccess;
+    Real* d_array = nullptr;
+    ret = cudaMalloc(&d_array, count * sizeof(Real));
+    check_error(ret, "cudaMalloc");
+    ret = cudaMemcpy(d_array, &num[pos], count * sizeof(Real), cudaMemcpyHostToDevice);
+    check_error(ret, "cudaMemcpy");
+
+    bulk_sqrt_kernel<<<count / THREAD_PER_BLOCK + 1, THREAD_PER_BLOCK>>>(d_array, count);
+    check_error(cudaGetLastError(), "launch");
+
+    ret = cudaMemcpy(&out[pos], d_array, count * sizeof(Real), cudaMemcpyDeviceToHost);
+    check_error(ret, "copy back");
+    ret = cudaFree(d_array);
+    check_error(ret, "free");
+}
+
+void compare_cuda(DataVector& num, DataVector& out) {
+    size_t size = num.size() / 16;
+    for (size_t i = 0; i < num.size(); i += size) {
+        size_t s = (i + size > num.size()) ? num.size() - i : size;
+        _compare_cuda(num, out, i, s);
+    }
+}
 
 int main(int argc, char *argv[]) {
     //generate_file("./list.txt");
@@ -380,6 +438,19 @@ int main(int argc, char *argv[]) {
     benchmark([&](){
         compare_tbb_avx(data, result);
     }, "TBB AVX Test");
+    check(ans, result);
+
+    zero_out(result);
+    benchmark([&](){
+        compare_tbb_para_for_avx(data, result);
+    }, "TBB parallel_for Test");
+    check(ans, result);
+
+    print_cuda();
+    zero_out(result);
+    benchmark([&](){
+        compare_cuda(data, result);
+    }, "CUDA Test");
     check(ans, result);
 
     return 0;
