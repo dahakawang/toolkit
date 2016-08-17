@@ -428,6 +428,89 @@ void compare_cuda_pinned(double* num, double* out, int count) {
     }
 }
 
+void test_cuda_pinned_mem(DataVector& ans, DataVector& data) {
+    ans.resize(0);
+    cudaError_t ret = cudaSuccess;
+    double* ptr = nullptr;
+    ret = cudaMallocHost(&ptr, data.size() * sizeof(data[0]));
+    check_error(ret, "cudaMallocHost");
+    std::copy(data.begin(), data.end(), ptr);
+
+    benchmark([&](){
+        compare_cuda_pinned(ptr, ptr, data.size());
+    }, "CUDA Pinned Mem Test");
+    for (int i = 0; i < ans.size(); ++i) {
+        if (ans[i] != ptr[i]) {
+            throw std::runtime_error("not match [" + to_string(i) + "] = " + to_string(ans[i]) + " - " + to_string(ptr[i]));
+        }
+    }
+    ret = cudaFreeHost(ptr);
+    check_error(ret, "cudaFreeHost");
+}
+
+
+void _compare_cuda_pinned_stream(double* num, double* out, size_t size, size_t count, Real* d_array, cudaStream_t stream) {
+    cudaError_t ret = cudaSuccess;
+    ret = cudaMemcpyAsync(d_array, num, size, cudaMemcpyHostToDevice, stream);
+    check_error(ret, "cudaMemcpy");
+
+    bulk_sqrt_kernel<<<count / THREAD_PER_BLOCK + 1, THREAD_PER_BLOCK, 0, stream>>>(d_array, count);
+    check_error(cudaGetLastError(), "launch");
+
+    ret = cudaMemcpyAsync(out, d_array, size, cudaMemcpyDeviceToHost, stream);
+    check_error(ret, "copy back");
+}
+
+void compare_cuda_pinned_stream(double* num, double* out, int count) {
+
+    size_t size = count / 4;
+    vector<Real*> dmem;
+    vector<cudaStream_t> streams;
+    for (size_t i = 0; i < count; i += size) {
+        Real* d_array = nullptr;
+        check_error(cudaMalloc(&d_array, size * sizeof(double)), "cudaMalloc");
+        dmem.push_back(d_array);
+
+        cudaStream_t stream;
+        check_error( cudaStreamCreate(&stream) , "create stream");
+        streams.push_back(stream);
+    }
+
+    for (size_t i = 0, pos = 0; i < count; i += size, ++pos) {
+        size_t s = (i + size > count) ? count - i : size;
+        _compare_cuda_pinned_stream(&num[i], &out[i], s * sizeof(double), s, dmem[pos], streams[pos]);
+    }
+
+    for(auto s : streams) {
+        cudaStreamSynchronize(s);
+        cudaStreamDestroy(s);
+    }
+
+    for (auto ptr : dmem) {
+        check_error(cudaFree(ptr), "cudaFree");
+    }
+}
+
+void test_cuda_pinned_mem_stream(DataVector& ans, DataVector& data) {
+    ans.resize(0);
+    cudaError_t ret = cudaSuccess;
+    double* ptr = nullptr;
+    ret = cudaMallocHost(&ptr, data.size() * sizeof(data[0]));
+    check_error(ret, "cudaMallocHost");
+    std::copy(data.begin(), data.end(), ptr);
+
+    benchmark([&](){
+        compare_cuda_pinned_stream(ptr, ptr, data.size());
+    }, "CUDA Pinned Mem With Multiple Stream Test");
+    for (int i = 0; i < ans.size(); ++i) {
+        if (ans[i] != ptr[i]) {
+            throw std::runtime_error("not match [" + to_string(i) + "] = " + to_string(ans[i]) + " - " + to_string(ptr[i]));
+        }
+    }
+    ret = cudaFreeHost(ptr);
+    check_error(ret, "cudaFreeHost");
+}
+
 int main(int argc, char *argv[]) {
     //generate_file("./list.txt");
     DataVector data = load_file("./list.txt");
@@ -441,7 +524,7 @@ int main(int argc, char *argv[]) {
     benchmark([&](){
         baseline(data, ans);
     }, "Baseline Test");
-/*
+
     zero_out(result);
     benchmark([&](){
         compare_sse_single(data, result);
@@ -478,26 +561,8 @@ int main(int argc, char *argv[]) {
     }, "CUDA Test");
     check(ans, result);
 
-    */
-
-
-    ans.resize(0);
-    cudaError_t ret = cudaSuccess;
-    double* ptr = nullptr;
-    ret = cudaMallocHost(&ptr, data.size() * sizeof(data[0]));
-    check_error(ret, "cudaMallocHost");
-    std::copy(data.begin(), data.end(), ptr);
-
-    benchmark([&](){
-        compare_cuda_pinned(ptr, ptr, data.size());
-    }, "CUDA Pinned Mem Test");
-    for (int i = 0; i < ans.size(); ++i) {
-        if (ans[i] != ptr[i]) {
-            throw std::runtime_error("not match [" + to_string(i) + "] = " + to_string(ans[i]) + " - " + to_string(ptr[i]));
-        }
-    }
-    ret = cudaFreeHost(ptr);
-    check_error(ret, "cudaFreeHost");
+    test_cuda_pinned_mem(ans, data);
+    test_cuda_pinned_mem_stream(ans, data);
 
     return 0;
 }
