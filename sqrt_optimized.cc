@@ -1,4 +1,5 @@
 #include <iostream>
+#include <algorithm>
 #include <functional>
 #include <type_traits>
 #include <vector>
@@ -395,10 +396,35 @@ void _compare_cuda(DataVector& num, DataVector& out, size_t pos, size_t count) {
 }
 
 void compare_cuda(DataVector& num, DataVector& out) {
-    size_t size = num.size() / 16;
+    size_t size = num.size() / 4;
     for (size_t i = 0; i < num.size(); i += size) {
         size_t s = (i + size > num.size()) ? num.size() - i : size;
         _compare_cuda(num, out, i, s);
+    }
+}
+
+void _compare_cuda_pinned(double* num, double* out, size_t size, size_t count) {
+    cudaError_t ret = cudaSuccess;
+    Real* d_array = nullptr;
+    ret = cudaMalloc(&d_array, size);
+    check_error(ret, "cudaMalloc");
+    ret = cudaMemcpy(d_array, num, size, cudaMemcpyHostToDevice);
+    check_error(ret, "cudaMemcpy");
+
+    bulk_sqrt_kernel<<<count / THREAD_PER_BLOCK + 1, THREAD_PER_BLOCK>>>(d_array, count);
+    check_error(cudaGetLastError(), "launch");
+
+    ret = cudaMemcpy(out, d_array, size, cudaMemcpyDeviceToHost);
+    check_error(ret, "copy back");
+    ret = cudaFree(d_array);
+    check_error(ret, "free");
+}
+
+void compare_cuda_pinned(double* num, double* out, int count) {
+    size_t size = count / 4;
+    for (size_t i = 0; i < count; i += size) {
+        size_t s = (i + size > count) ? count - i : size;
+        _compare_cuda_pinned(&num[i], &out[i], s * sizeof(double), s);
     }
 }
 
@@ -415,7 +441,7 @@ int main(int argc, char *argv[]) {
     benchmark([&](){
         baseline(data, ans);
     }, "Baseline Test");
-
+/*
     zero_out(result);
     benchmark([&](){
         compare_sse_single(data, result);
@@ -446,12 +472,32 @@ int main(int argc, char *argv[]) {
     }, "TBB parallel_for Test");
     check(ans, result);
 
-    print_cuda();
     zero_out(result);
     benchmark([&](){
         compare_cuda(data, result);
     }, "CUDA Test");
     check(ans, result);
+
+    */
+
+
+    ans.resize(0);
+    cudaError_t ret = cudaSuccess;
+    double* ptr = nullptr;
+    ret = cudaMallocHost(&ptr, data.size() * sizeof(data[0]));
+    check_error(ret, "cudaMallocHost");
+    std::copy(data.begin(), data.end(), ptr);
+
+    benchmark([&](){
+        compare_cuda_pinned(ptr, ptr, data.size());
+    }, "CUDA Pinned Mem Test");
+    for (int i = 0; i < ans.size(); ++i) {
+        if (ans[i] != ptr[i]) {
+            throw std::runtime_error("not match [" + to_string(i) + "] = " + to_string(ans[i]) + " - " + to_string(ptr[i]));
+        }
+    }
+    ret = cudaFreeHost(ptr);
+    check_error(ret, "cudaFreeHost");
 
     return 0;
 }
