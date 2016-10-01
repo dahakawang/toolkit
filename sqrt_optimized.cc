@@ -1,4 +1,5 @@
 #include <iostream>
+#include <algorithm>
 #include <functional>
 #include <type_traits>
 #include <vector>
@@ -10,8 +11,11 @@
 #include <thread>
 #include <emmintrin.h>
 #include <immintrin.h>
+#include <cuda_runtime.h>
+#include <cuda.h>
 
 using namespace tbb::flow;
+using namespace tbb;
 using namespace std;
 
 template<typename T>
@@ -214,6 +218,7 @@ class aligned_allocator
 typedef vector<double, aligned_allocator<double, 32>> DataVector;
 typedef DataVector::iterator DataIterator;
 typedef tuple<DataIterator, DataIterator, DataIterator> TbbData;
+typedef DataIterator::value_type Real;
 
 DataVector load_double_list(FILE* file) {
     size_t size = get_file_size(file);
@@ -262,6 +267,16 @@ void check_align(void* p) {
     if (ptr % 8 == 0) {
         std::cout << "aligned 8byte" << std::endl;
         return;
+    }
+}
+
+void print_cuda() {
+    int count;
+    cudaGetDeviceCount(&count);
+    for (int i = 0; i < count; ++i) {
+        cudaDeviceProp prop;
+        cudaGetDeviceProperties(&prop, i);
+        printf("GPU [%d] %d.%d\n", i, prop.major, prop.minor);
     }
 }
 
@@ -333,7 +348,7 @@ public:
 void compare_tbb_avx(DataVector& num, DataVector& out) {
     graph g;
     function_node<TbbData> node(g, unlimited, TbbBody());
-    static const size_t SIZE = ((2 << 23) / 4) * 4;
+    static const size_t SIZE = ((2 << 24) / 4) * 4;
 
     for (size_t pos = 0; pos < num.size(); pos += SIZE) {
         size_t pos_end = (pos + SIZE >= num.size())? num.size() : pos + SIZE;
@@ -343,6 +358,158 @@ void compare_tbb_avx(DataVector& num, DataVector& out) {
     g.wait_for_all();
 }
 
+void compare_tbb_para_for_avx(DataVector& num, DataVector& out) {
+    parallel_for(blocked_range<size_t>(0, num.size(), 4 * 2<<20), [&](const blocked_range<size_t>& r) {
+        compare_avx_iter(num.begin() + r.begin(), num.begin() + r.end(), out.begin() + r.begin());
+    });
+}
+
+void check_error(cudaError_t error, const char* str = nullptr) {
+    if (error != cudaSuccess) {
+        std::cout << cudaGetErrorString(error) << " " << (str? str : "")<< std::endl;
+        throw std::runtime_error("GPU Error");
+    }
+}
+
+#define THREAD_PER_BLOCK 1024
+__global__ void bulk_sqrt_kernel(Real* data, size_t count) {
+    size_t pos = blockIdx.x * blockDim.x + threadIdx.x;
+    if (pos >= count) return;
+    data[pos] = sqrt(data[pos]);
+}
+
+void _compare_cuda(DataVector& num, DataVector& out, size_t pos, size_t count) {
+    cudaError_t ret = cudaSuccess;
+    Real* d_array = nullptr;
+    ret = cudaMalloc(&d_array, count * sizeof(Real));
+    check_error(ret, "cudaMalloc");
+    ret = cudaMemcpy(d_array, &num[pos], count * sizeof(Real), cudaMemcpyHostToDevice);
+    check_error(ret, "cudaMemcpy");
+
+    bulk_sqrt_kernel<<<count / THREAD_PER_BLOCK + 1, THREAD_PER_BLOCK>>>(d_array, count);
+    check_error(cudaGetLastError(), "launch");
+
+    ret = cudaMemcpy(&out[pos], d_array, count * sizeof(Real), cudaMemcpyDeviceToHost);
+    check_error(ret, "copy back");
+    ret = cudaFree(d_array);
+    check_error(ret, "free");
+}
+
+void compare_cuda(DataVector& num, DataVector& out) {
+    size_t size = num.size() / 4;
+    for (size_t i = 0; i < num.size(); i += size) {
+        size_t s = (i + size > num.size()) ? num.size() - i : size;
+        _compare_cuda(num, out, i, s);
+    }
+}
+
+void _compare_cuda_pinned(double* num, double* out, size_t size, size_t count) {
+    cudaError_t ret = cudaSuccess;
+    Real* d_array = nullptr;
+    ret = cudaMalloc(&d_array, size);
+    check_error(ret, "cudaMalloc");
+    ret = cudaMemcpy(d_array, num, size, cudaMemcpyHostToDevice);
+    check_error(ret, "cudaMemcpy");
+
+    bulk_sqrt_kernel<<<count / THREAD_PER_BLOCK + 1, THREAD_PER_BLOCK>>>(d_array, count);
+    check_error(cudaGetLastError(), "launch");
+
+    ret = cudaMemcpy(out, d_array, size, cudaMemcpyDeviceToHost);
+    check_error(ret, "copy back");
+    ret = cudaFree(d_array);
+    check_error(ret, "free");
+}
+
+void compare_cuda_pinned(double* num, double* out, int count) {
+    size_t size = count / 4;
+    for (size_t i = 0; i < count; i += size) {
+        size_t s = (i + size > count) ? count - i : size;
+        _compare_cuda_pinned(&num[i], &out[i], s * sizeof(double), s);
+    }
+}
+
+void test_cuda_pinned_mem(DataVector& ans, DataVector& data) {
+    ans.resize(0);
+    cudaError_t ret = cudaSuccess;
+    double* ptr = nullptr;
+    ret = cudaMallocHost(&ptr, data.size() * sizeof(data[0]));
+    check_error(ret, "cudaMallocHost");
+    std::copy(data.begin(), data.end(), ptr);
+
+    benchmark([&](){
+        compare_cuda_pinned(ptr, ptr, data.size());
+    }, "CUDA Pinned Mem Test");
+    for (int i = 0; i < ans.size(); ++i) {
+        if (ans[i] != ptr[i]) {
+            throw std::runtime_error("not match [" + to_string(i) + "] = " + to_string(ans[i]) + " - " + to_string(ptr[i]));
+        }
+    }
+    ret = cudaFreeHost(ptr);
+    check_error(ret, "cudaFreeHost");
+}
+
+
+void _compare_cuda_pinned_stream(double* num, double* out, size_t size, size_t count, Real* d_array, cudaStream_t stream) {
+    cudaError_t ret = cudaSuccess;
+    ret = cudaMemcpyAsync(d_array, num, size, cudaMemcpyHostToDevice, stream);
+    check_error(ret, "cudaMemcpy");
+
+    bulk_sqrt_kernel<<<count / THREAD_PER_BLOCK + 1, THREAD_PER_BLOCK, 0, stream>>>(d_array, count);
+    check_error(cudaGetLastError(), "launch");
+
+    ret = cudaMemcpyAsync(out, d_array, size, cudaMemcpyDeviceToHost, stream);
+    check_error(ret, "copy back");
+}
+
+void compare_cuda_pinned_stream(double* num, double* out, int count) {
+
+    size_t size = count / 4;
+    vector<Real*> dmem;
+    vector<cudaStream_t> streams;
+    for (size_t i = 0; i < count; i += size) {
+        Real* d_array = nullptr;
+        check_error(cudaMalloc(&d_array, size * sizeof(double)), "cudaMalloc");
+        dmem.push_back(d_array);
+
+        cudaStream_t stream;
+        check_error( cudaStreamCreate(&stream) , "create stream");
+        streams.push_back(stream);
+    }
+
+    for (size_t i = 0, pos = 0; i < count; i += size, ++pos) {
+        size_t s = (i + size > count) ? count - i : size;
+        _compare_cuda_pinned_stream(&num[i], &out[i], s * sizeof(double), s, dmem[pos], streams[pos]);
+    }
+
+    for(auto s : streams) {
+        cudaStreamSynchronize(s);
+        cudaStreamDestroy(s);
+    }
+
+    for (auto ptr : dmem) {
+        check_error(cudaFree(ptr), "cudaFree");
+    }
+}
+
+void test_cuda_pinned_mem_stream(DataVector& ans, DataVector& data) {
+    ans.resize(0);
+    cudaError_t ret = cudaSuccess;
+    double* ptr = nullptr;
+    ret = cudaMallocHost(&ptr, data.size() * sizeof(data[0]));
+    check_error(ret, "cudaMallocHost");
+    std::copy(data.begin(), data.end(), ptr);
+
+    benchmark([&](){
+        compare_cuda_pinned_stream(ptr, ptr, data.size());
+    }, "CUDA Pinned Mem With Multiple Stream Test");
+    for (int i = 0; i < ans.size(); ++i) {
+        if (ans[i] != ptr[i]) {
+            throw std::runtime_error("not match [" + to_string(i) + "] = " + to_string(ans[i]) + " - " + to_string(ptr[i]));
+        }
+    }
+    ret = cudaFreeHost(ptr);
+    check_error(ret, "cudaFreeHost");
+}
 
 int main(int argc, char *argv[]) {
     //generate_file("./list.txt");
@@ -381,6 +548,21 @@ int main(int argc, char *argv[]) {
         compare_tbb_avx(data, result);
     }, "TBB AVX Test");
     check(ans, result);
+
+    zero_out(result);
+    benchmark([&](){
+        compare_tbb_para_for_avx(data, result);
+    }, "TBB parallel_for Test");
+    check(ans, result);
+
+    zero_out(result);
+    benchmark([&](){
+        compare_cuda(data, result);
+    }, "CUDA Test");
+    check(ans, result);
+
+    test_cuda_pinned_mem(ans, data);
+    test_cuda_pinned_mem_stream(ans, data);
 
     return 0;
 }
